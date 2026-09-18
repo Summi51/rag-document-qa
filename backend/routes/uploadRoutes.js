@@ -120,7 +120,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     //   firstChunkEmbedding.length
     // );
 
-// chunks - (text) + embading - [9.8,-9,2..] + metadata (aditional info)
+    // chunks - (text) + embading - [9.8,-9,2..] + metadata (aditional info)
     const embeddedChunks = [];
 
     for (let index = 0; index < chunks.length; index++) {

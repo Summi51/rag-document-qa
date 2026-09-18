@@ -166,5 +166,5 @@ Answer:
 export default router;
 
 // $vectorSearch
-// "Mere paas question ka vector hai. 
+// "Mere paas question ka vector hai.
 // Database mein jo vectors iske meaning ke closest hain, unko find karo."
