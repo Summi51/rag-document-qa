@@ -61,6 +61,38 @@ class ImageDataPolyfill {
 
 class Path2DPolyfill {}
 
+class CanvasStub {
+  constructor(width = 0, height = 0) {
+    this.width = width;
+    this.height = height;
+  }
+
+  getContext() {
+    return {
+      canvas: this,
+      fillRect() {},
+      clearRect() {},
+      drawImage() {},
+      getImageData(width = 0, height = 0) {
+        return new ImageDataPolyfill([], width, height);
+      },
+      putImageData() {},
+      setTransform() {},
+      transform() {},
+      save() {},
+      restore() {},
+      beginPath() {},
+      closePath() {},
+      clip() {},
+      fill() {},
+      stroke() {},
+      measureText() {
+        return { width: 0 };
+      },
+    };
+  }
+}
+
 if (typeof globalThis.DOMMatrix === "undefined") {
   globalThis.DOMMatrix = DOMMatrixPolyfill;
 }
@@ -71,6 +103,10 @@ if (typeof globalThis.ImageData === "undefined") {
 
 if (typeof globalThis.Path2D === "undefined") {
   globalThis.Path2D = Path2DPolyfill;
+}
+
+if (typeof globalThis.OffscreenCanvas === "undefined") {
+  globalThis.OffscreenCanvas = CanvasStub;
 }
 
 export {};

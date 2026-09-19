@@ -1,8 +1,20 @@
 import { useState, useRef } from "react";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "https://rag-document-qa-one.vercel.app";
+const LOCAL_API_URL = "http://localhost:8000";
+const DEPLOYED_API_URL = "https://rag-document-qa-one.vercel.app";
+
+const isLocalFrontend =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1");
+
+const API_URL = isLocalFrontend
+  ? LOCAL_API_URL
+  : import.meta.env.VITE_API_URL || DEPLOYED_API_URL;
+
 // const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// const API_URL = import.meta.env.VITE_API_URL || "https://rag-document-qa-one.vercel.app";
 
 const readJson = async (response) => {
   try {

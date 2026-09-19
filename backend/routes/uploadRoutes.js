@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import "../config/pdfPolyfill.js";
 import ai from "../config/gemini.js";
 import DocumentChunk from "../models/DocumentChunk.js";
 const router = express.Router();
@@ -69,26 +68,12 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.log("Type:", req.file.mimetype);
     console.log("Size:", req.file.size, "bytes");
 
-    // Lazy-load pdf-parse so Vercel health routes do not crash on boot.
-    const { PDFParse } = await import("pdf-parse");
-
-    const parser = new PDFParse({
-      data: req.file.buffer,
-    });
-
-    let pdfData;
-    let pdfInfo;
-
-    try {
-      pdfData = await parser.getText();
-      pdfInfo = await parser.getInfo();
-    } finally {
-      await parser.destroy();
-    }
+    const { default: extractPdfText } = await import("../config/extractPdf.js");
+    const pdfInfo = await extractPdfText(req.file.buffer);
 
     console.log("Number of pages:", pdfInfo.total);
 
-    const extractedText = pdfData.text;
+    const extractedText = pdfInfo.text;
 
     console.log("Extracted text length:", extractedText.length);
 
@@ -178,7 +163,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: "Failed to process PDF",
+      message: error.message || "Failed to process PDF",
     });
   }
 });
