@@ -43,6 +43,13 @@ const generateEmbedding = async (text) => {
 
 router.post("/upload", upload.single("file"), async (req, res) => {
   try {
+    if (!ai) {
+      return res.status(500).json({
+        success: false,
+        message: "GEMINI_API_KEY is missing on the server",
+      });
+    }
+
     if (!req.file) {
       return res.status(400).json({
         success: false,

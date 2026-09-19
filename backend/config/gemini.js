@@ -4,11 +4,15 @@ import { GoogleGenAI } from "@google/genai";
 const apiKey = process.env.GEMINI_API_KEY;
 
 if (!apiKey) {
-  throw new Error("GEMINI_API_KEY is missing. Add it to backend/.env");
+  console.error(
+    "GEMINI_API_KEY is missing. Add it to backend/.env or Vercel env vars"
+  );
 }
 
-const ai = new GoogleGenAI({
-  apiKey,
-});
+const ai = apiKey
+  ? new GoogleGenAI({
+      apiKey,
+    })
+  : null;
 
 export default ai;

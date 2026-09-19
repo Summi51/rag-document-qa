@@ -12,6 +12,21 @@ const PORT = process.env.PORT || 8000;
 
 app.use(cors());
 app.use(express.json());
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error("Database connection failed:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Database connection failed",
+    });
+  }
+});
+
 app.use("/api", uploadRoutes);
 app.use("/api", searchRoutes);
 
@@ -29,13 +44,15 @@ app.get("/api/health", (req, res) => {
 });
 
 const startServer = async () => {
-  await connectDB();
-
   if (ai) {
     console.log("Gemini client configured");
+  } else {
+    console.error("Gemini client is not configured");
   }
 
   if (!process.env.VERCEL) {
+    await connectDB();
+
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

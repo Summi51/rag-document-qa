@@ -56,6 +56,13 @@ const generateAnswer = async (prompt) => {
 
 router.post("/search", async (req, res) => {
   try {
+    if (!ai) {
+      return res.status(500).json({
+        success: false,
+        message: "GEMINI_API_KEY is missing on the server",
+      });
+    }
+
     const { question } = req.body || {};
 
     if (!question || typeof question !== "string" || !question.trim()) {
