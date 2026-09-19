@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const documentChunkSchema = new mongoose.Schema(
   {
+    documentId: {
+      type: String,
+      required: true,
+      index: true, // "doc-uuid" - used to scope search to a single document
+    },
+
     documentName: {
       type: String,
       required: true, // "react.pdf"
@@ -20,6 +26,11 @@ const documentChunkSchema = new mongoose.Schema(
     chunkIndex: {
       type: Number,
       required: true,  // Chunk 0 Chunk 1 Chunk 2
+    },
+
+    pageNumber: {
+      type: Number,
+      required: true, // Which PDF page (1-based) this chunk came from
     },
   },
   {

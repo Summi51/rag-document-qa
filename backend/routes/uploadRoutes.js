@@ -1,6 +1,8 @@
 import express from "express";
 import multer from "multer";
+import crypto from "crypto";
 import ai from "../config/gemini.js";
+import Document from "../models/Document.js";
 import DocumentChunk from "../models/DocumentChunk.js";
 const router = express.Router();
 
@@ -8,8 +10,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
 });
 
-// chunking... 
-const createChunks = (text, chunkSize = 1000, overlap = 200) => {
+// chunking...
+// Chunks a single page's text and tags each chunk with the page it came
+// from, so results can show which PDF page an answer was found on.
+const createChunks = (text, pageNumber, chunkSize = 1000, overlap = 200) => {
   const chunks = [];
 
   let start = 0;
@@ -17,10 +21,10 @@ const createChunks = (text, chunkSize = 1000, overlap = 200) => {
   while (start < text.length) {
     const end = start + chunkSize;
 
-    const chunk = text.slice(start, end).trim();
+    const chunkText = text.slice(start, end).trim();
 
-    if (chunk.length > 0) {
-      chunks.push(chunk);
+    if (chunkText.length > 0) {
+      chunks.push({ text: chunkText, pageNumber });
     }
 
     start += chunkSize - overlap;
@@ -52,11 +56,11 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: "No PDF file uploaded",
+        message: "Please upload a PDF file",
       });
     }
 
-    if (req.file.mimetype && req.file.mimetype !== "application/pdf") {
+    if (req.file.mimetype !== "application/pdf") {
       return res.status(400).json({
         success: false,
         message: "Only PDF files are allowed",
@@ -68,27 +72,60 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.log("Type:", req.file.mimetype);
     console.log("Size:", req.file.size, "bytes");
 
+    // Unique ID for this document so multiple PDFs can coexist and be
+    // searched independently instead of overwriting each other.
+    const documentId = crypto.randomUUID();
+
     const { default: extractPdfText } = await import("../config/extractPdf.js");
     const pdfInfo = await extractPdfText(req.file.buffer);
 
     console.log("Number of pages:", pdfInfo.total);
 
     const extractedText = pdfInfo.text;
+    const pages = pdfInfo.pages || [];
 
     console.log("Extracted text length:", extractedText.length);
 
-    if (!extractedText || !extractedText.trim()) {
+    // Scanned/image-only or empty PDFs have no extractable text. We do not
+    // run OCR, so reject them with a clear message instead of storing junk.
+    const hasText = pages.some((page) => page && page.trim().length > 0);
+
+    if (!hasText) {
       return res.status(400).json({
         success: false,
-        message: "No text could be extracted from this PDF",
+        message: "Could not extract readable text from this PDF",
       });
     }
 
-    const chunks = createChunks(extractedText);
+    // Chunk page-by-page (instead of the whole document at once) so each
+    // chunk can be tagged with the PDF page number it came from.
+    const allChunks = [];
+    let globalChunkIndex = 0;
 
-    console.log("Number of chunks:", chunks.length);
+    for (let index = 0; index < pdfInfo.pages.length; index++) {
+      const pageNumber = index + 1;
+      const pageText = pdfInfo.pages[index].trim();
 
-    if (chunks.length === 0) {
+      if (!pageText) {
+        continue;
+      }
+
+      const pageChunks = createChunks(pageText, pageNumber);
+
+      for (const chunk of pageChunks) {
+        allChunks.push({
+          text: chunk.text,
+          pageNumber: chunk.pageNumber,
+          chunkIndex: globalChunkIndex,
+        });
+
+        globalChunkIndex++;
+      }
+    }
+
+    console.log("Number of chunks:", allChunks.length);
+
+    if (allChunks.length === 0) {
       return res.status(400).json({
         success: false,
         message: "No text chunks were created from this PDF",
@@ -116,39 +153,75 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     // );
 
     // chunks - (text) + embading - [9.8,-9,2..] + metadata (aditional info)
-    const embeddedChunks = [];
+    // Generate embeddings concurrently (in small batches) instead of one
+    // request at a time, to speed up processing while avoiding overwhelming
+    // the API with too many simultaneous requests.
+    const EMBEDDING_CONCURRENCY = 5;
+    const embeddedChunks = new Array(allChunks.length);
 
-    for (let index = 0; index < chunks.length; index++) {
-      const embedding = await generateEmbedding(chunks[index]);
+    for (
+      let batchStart = 0;
+      batchStart < allChunks.length;
+      batchStart += EMBEDDING_CONCURRENCY
+    ) {
+      const batchIndexes = [];
 
-      embeddedChunks.push({
-        chunkText: chunks[index],
-        embedding,
-        chunkIndex: index,
-      });
+      for (
+        let index = batchStart;
+        index < Math.min(batchStart + EMBEDDING_CONCURRENCY, allChunks.length);
+        index++
+      ) {
+        batchIndexes.push(index);
+      }
 
-      console.log(`Embedding generated for chunk ${index + 1}`);
+      await Promise.all(
+        batchIndexes.map(async (index) => {
+          const chunk = allChunks[index];
+          const embedding = await generateEmbedding(chunk.text);
+
+          embeddedChunks[index] = {
+            documentId,
+            chunkText: chunk.text,
+            embedding,
+            chunkIndex: chunk.chunkIndex,
+            pageNumber: chunk.pageNumber,
+          };
+
+          console.log(`Embedding generated for chunk ${index + 1}`);
+        })
+      );
     }
 
     // mongodb save
+    // Each upload gets its own documentId, so multiple documents can be
+    // stored side by side and searched independently (no more wiping out
+    // previously uploaded documents).
 
-     const documentsToInsert = embeddedChunks.map((item) => ({
+    const document = await Document.create({
+      documentId,
+      fileName: req.file.originalname,
+    });
+
+    const documentsToInsert = embeddedChunks.map((item) => ({
+      documentId: item.documentId,
       documentName: req.file.originalname,
       chunkText: item.chunkText,
       embedding: item.embedding,
       chunkIndex: item.chunkIndex,
+      pageNumber: item.pageNumber,
     }));
 
     await DocumentChunk.insertMany(documentsToInsert);
 
     console.log(
-      `${documentsToInsert.length} chunks saved to MongoDB`
+      `${documentsToInsert.length} chunks saved to MongoDB for document ${document.documentId}`
     );
 
     //===============
     res.json({
       success: true,
-      message: "PDF processed and chunked successfully",
+      message: "PDF processed and embeddings stored successfully",
+      documentId,
       file: {
         name: req.file.originalname,
         type: req.file.mimetype,
@@ -156,14 +229,34 @@ router.post("/upload", upload.single("file"), async (req, res) => {
       },
       pages: pdfInfo.total,
       textLength: extractedText.length,
-      chunkCount: chunks.length,
+      chunkCount: allChunks.length,
     });
   } catch (error) {
-    console.error("PDF processing failed:", error);
+    console.error("PDF upload failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to process the PDF",
+    });
+  }
+});
+
+router.get("/documents", async (req, res) => {
+  try {
+    const documents = await Document.find()
+      .sort({ createdAt: -1 })
+      .select("documentId fileName createdAt");
+
+    res.json({
+      success: true,
+      documents,
+    });
+  } catch (error) {
+    console.error("Failed to fetch documents:", error);
 
     res.status(500).json({
       success: false,
-      message: error.message || "Failed to process PDF",
+      message: "Failed to fetch documents",
     });
   }
 });

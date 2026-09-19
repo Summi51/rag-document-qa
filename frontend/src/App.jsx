@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import "./App.css";
 
 const LOCAL_API_URL = "http://localhost:8000";
@@ -100,7 +100,29 @@ function App() {
   const [questionStatus, setQuestionStatus] = useState("");
   const [questionStatusType, setQuestionStatusType] = useState("info");
 
+  const [documents, setDocuments] = useState([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
+
   const fileInputRef = useRef(null);
+
+  const fetchDocuments = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/documents`);
+      const data = await readJson(response);
+
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to fetch documents");
+      }
+
+      setDocuments(data.documents || []);
+    } catch (error) {
+      console.error("Documents fetch error:", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
 
   const handleFileChange = (file) => {
     if (!file) return;
@@ -146,6 +168,8 @@ function App() {
 
       setUploadStatus(`PDF processed successfully — ${data.chunkCount} chunks created.`);
       setUploadStatusType("success");
+      setSelectedDocumentId(data.documentId);
+      fetchDocuments();
     } catch (error) {
       console.error("Upload error:", error);
       setUploadStatus(error.message || "Failed to upload PDF.");
@@ -163,6 +187,11 @@ function App() {
       setQuestionStatusType("error");
       return;
     }
+    if (!selectedDocumentId) {
+      setQuestionStatus("Please select a document first.");
+      setQuestionStatusType("error");
+      return;
+    }
     try {
       setIsAsking(true);
       setAnswer("");
@@ -173,19 +202,27 @@ function App() {
       const response = await fetch(`${API_URL}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmedQuestion }),
+        body: JSON.stringify({
+          question: trimmedQuestion,
+          documentId: selectedDocumentId,
+        }),
       });
 
       const data = await readJson(response);
 
-      if (!response.ok) throw new Error(data.message || "Question failed");
+      if (!response.ok) {
+        throw new Error(data.message || "Failed to get an answer");
+      }
 
       setAnswer(data.answer);
       setSources(data.sources || []);
       setQuestionStatus("");
     } catch (error) {
       console.error("Question error:", error);
-      setQuestionStatus(error.message || "Failed to get an answer.");
+
+      setAnswer(error.message || "Failed to get an answer");
+      setSources([]);
+      setQuestionStatus(error.message || "Failed to get an answer");
       setQuestionStatusType("error");
     } finally {
       setIsAsking(false);
@@ -292,6 +329,25 @@ function App() {
             <h2 className="text-xl font-semibold text-slate-100">Ask a Question</h2>
           </div>
 
+          <label htmlFor="document-select" className="text-sm font-medium text-slate-300">
+            Select Document:
+          </label>
+
+          <select
+            id="document-select"
+            value={selectedDocumentId}
+            onChange={(event) => setSelectedDocumentId(event.target.value)}
+            className="input-field w-full rounded-xl px-4 py-3 text-sm mt-2 mb-4"
+          >
+            <option value="">Select a document</option>
+
+            {documents.map((document) => (
+              <option key={document.documentId} value={document.documentId}>
+                {document.fileName}
+              </option>
+            ))}
+          </select>
+
           <form onSubmit={handleAskQuestion}>
             <textarea
               id="question-input"
@@ -311,7 +367,7 @@ function App() {
             <button
               id="ask-btn"
               type="submit"
-              disabled={isAsking || !question.trim()}
+              disabled={isAsking || !selectedDocumentId || !question.trim()}
               className="btn-primary w-full mt-4 py-3 px-6 rounded-xl font-semibold flex items-center justify-center gap-2 text-sm relative z-10"
             >
               {isAsking ? (
@@ -368,6 +424,11 @@ function App() {
                         <span className="text-xs text-slate-400 font-medium truncate max-w-xs">
                           {source.documentName}
                         </span>
+                        {source.pageNumber !== undefined && (
+                          <span className="px-2 py-0.5 rounded text-xs font-bold bg-indigo-600/20 text-indigo-300 border border-indigo-600/30">
+                            📍 Page {source.pageNumber}
+                          </span>
+                        )}
                       </div>
                       <span className="text-xs font-semibold text-indigo-300 shrink-0">
                         {pct}% match

@@ -48,6 +48,7 @@ const extractPdfText = async (buffer) => {
   const doc = await loadingTask.promise;
   const total = doc.numPages;
   let text = "";
+  const pages = [];
 
   try {
     for (let pageNumber = 1; pageNumber <= total; pageNumber++) {
@@ -57,6 +58,9 @@ const extractPdfText = async (buffer) => {
         .map((item) => (item && item.str ? item.str : ""))
         .join(" ")
         .trim();
+
+      // Keep page text (even empty) so pages[i] lines up with page i + 1.
+      pages.push(pageText);
 
       if (pageText) {
         text += `${pageText}\n`;
@@ -68,6 +72,7 @@ const extractPdfText = async (buffer) => {
 
   return {
     text: text.trim(),
+    pages,
     total,
   };
 };

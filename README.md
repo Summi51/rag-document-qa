@@ -8,27 +8,57 @@ Upload a PDF, then ask questions. The app retrieves relevant chunks from your do
 ## How it works
 
 ```
-PDF
- ↓
-Text Extraction
- ↓
-Chunking
- ↓
-Embeddings (Gemini)
- ↓
-MongoDB Atlas Vector Search
- ↓
-User Question → Question Embedding
- ↓
-Relevant Chunks → RAG Prompt → Gemini
- ↓
-Final Answer + Sources
+┌──────────────┐
+│ PDF Upload   │  ← User file upload / Multer
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ PDF Parsing  │  ← pdfjs-dist → pages + text
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ Chunking     │  ← Custom JS (size 1000, overlap 200) + pageNumber
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ Embeddings   │  ← Gemini (gemini-embedding-2) → text → vector
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ MongoDB      │  ← Chunks + vectors + documentId / pageNumber
+│ Vector Store │
+└──────┬───────┘
+       ↓
+   User Question  ← Natural-language question + selected documentId
+       ↓
+┌──────────────┐
+│ Query        │  ← Gemini (gemini-embedding-2) → question → vector
+│ Embedding    │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ Vector Search│  ← MongoDB $vectorSearch (autoembed_index)
+└──────┬───────┘     filter: { documentId }
+       ↓
+┌──────────────┐
+│ Top-K Chunks │  ← Top 5 most similar chunks
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ Context      │  ← Retrieved chunks combined into a RAG prompt
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ Gemini       │  ← gemini-3.6-flash (fallback: 3.5 / 3.1-flash-lite)
+└──────┬───────┘
+       ↓
+ Answer + Sources  ← Answer + document name, page, chunk, score
 ```
 
-1. PDF text is extracted, split into overlapping chunks, and stored with embeddings in MongoDB.
+1. PDF text is extracted page by page, split into overlapping chunks, and stored with embeddings in MongoDB.
 2. A question is embedded the same way.
-3. `$vectorSearch` finds the closest chunks.
-4. Gemini answers using only that context.
+3. `$vectorSearch` finds the closest chunks for the selected `documentId`.
+4. Gemini answers using only that context and returns sources with page numbers.
 
 ## Tech stack
 
