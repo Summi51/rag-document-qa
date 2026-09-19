@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "./config/pdfPolyfill.js";
 import express from "express";
 import cors from "cors";
 import uploadRoutes from "./routes/uploadRoutes.js";
@@ -12,6 +13,19 @@ const PORT = process.env.PORT || 8000;
 
 app.use(cors());
 app.use(express.json());
+
+app.get("/", (req, res) => {
+  res.json({
+    message: "RAG Document Q&A Backend is running",
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Backend is healthy",
+  });
+});
 
 app.use(async (req, res, next) => {
   try {
@@ -29,19 +43,6 @@ app.use(async (req, res, next) => {
 
 app.use("/api", uploadRoutes);
 app.use("/api", searchRoutes);
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "RAG Document Q&A Backend is running",
-  });
-});
-
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    message: "Backend is healthy",
-  });
-});
 
 const startServer = async () => {
   if (ai) {

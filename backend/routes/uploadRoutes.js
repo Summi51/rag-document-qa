@@ -1,6 +1,6 @@
 import express from "express";
 import multer from "multer";
-import { PDFParse } from "pdf-parse";
+import "../config/pdfPolyfill.js";
 import ai from "../config/gemini.js";
 import DocumentChunk from "../models/DocumentChunk.js";
 const router = express.Router();
@@ -68,6 +68,9 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.log("Name:", req.file.originalname);
     console.log("Type:", req.file.mimetype);
     console.log("Size:", req.file.size, "bytes");
+
+    // Lazy-load pdf-parse so Vercel health routes do not crash on boot.
+    const { PDFParse } = await import("pdf-parse");
 
     const parser = new PDFParse({
       data: req.file.buffer,
