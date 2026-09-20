@@ -8,7 +8,18 @@ const documentSchema = new mongoose.Schema(
       unique: true,
     },
 
+    userId: {
+      type: String,
+      required: true,
+      index: true,
+    },
+
     fileName: {
+      type: String,
+      required: true,
+    },
+
+    fileHash: {
       type: String,
       required: true,
     },
@@ -17,6 +28,8 @@ const documentSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+documentSchema.index({ userId: 1, fileHash: 1 }, { unique: true });
 
 const Document = mongoose.model("Document", documentSchema);
 

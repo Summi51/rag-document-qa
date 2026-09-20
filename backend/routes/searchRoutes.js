@@ -1,10 +1,14 @@
 import express from "express";
 
 import ai from "../config/gemini.js";
+import authMiddleware from "../middleware/authMiddleware.js";
 import Document from "../models/Document.js";
 import DocumentChunk from "../models/DocumentChunk.js";
+import User from "../models/User.js";
 
 const router = express.Router();
+
+const MAX_SEARCHES_PER_DAY = 50;
 
 const ANSWER_MODELS = [
   "gemini-3.6-flash",
@@ -62,25 +66,27 @@ const generateAnswer = async (prompt) => {
   throw lastError;
 };
 
-// Asks Gemini to decide, on its own, whether the question needs the
-// uploaded document (RAG) or can be answered directly (greeting, small
-// talk, general knowledge, or unclear/ambiguous input). When it can be
-// answered directly, Gemini also produces that answer in the same call,
-// so we avoid a second round-trip and skip embeddings/vector search
-// entirely for non-document questions.
+// The user always asks questions against a document they explicitly selected,
+// so document lookup (RAG) is the default. This classifier only exists to
+// short-circuit pure small talk (greetings, thanks, farewells) so we skip a
+// wasted embedding + vector search for those.
+//
+// Deliberately conservative: anything that is not clear small talk goes to
+// RAG. Previously vague/general-sounding questions ("what is role of job?")
+// were answered from the model's own knowledge with empty sources, which is
+// exactly the behaviour we do not want when a document is selected.
 const classifyAndMaybeAnswer = async (question) => {
   const classifierPrompt = `You are a routing assistant in front of a document Q&A system.
 
-Decide whether the user's message requires looking up an uploaded document to answer, or whether you can answer it yourself right away (e.g. greetings, farewells, thanks, small talk, general knowledge, or unclear/ambiguous input).
+The user has already selected one uploaded document and is asking about it. Your only job is to catch pure small talk.
 
 Respond with ONLY compact JSON, no markdown, in exactly this shape:
 {"needsDocument": true|false, "answer": "<your direct reply, or empty string if needsDocument is true>"}
 
 Rules:
-- If the message is a greeting, farewell, thanks, or casual small talk, set needsDocument to false and give a short friendly reply as a document assistant.
-- If the message asks something general that does not depend on a specific uploaded document, set needsDocument to false and answer it yourself using your own knowledge.
-- If the message is unclear/ambiguous, set needsDocument to false and politely ask the user to clarify.
-- If the message is clearly asking about content that would be inside an uploaded document, set needsDocument to true and leave answer as an empty string.
+- Set needsDocument to false ONLY when the message is purely a greeting, farewell, thanks, or casual small talk. Then give a short friendly reply as a document assistant.
+- For EVERY other message, set needsDocument to true and leave answer as an empty string. This includes short questions, vague questions, and questions that sound general ("what is the role?", "what is experience?", "tell me about this", "candidate details"). They must be answered from the selected document.
+- Never ask the user to clarify and never answer from your own knowledge.
 
 User message: ${question}`;
 
@@ -110,7 +116,7 @@ User message: ${question}`;
   }
 };
 
-router.post("/search", async (req, res) => {
+router.post("/search", authMiddleware, async (req, res) => {
   try {
     if (!ai) {
       return res.status(500).json({
@@ -119,6 +125,7 @@ router.post("/search", async (req, res) => {
       });
     }
 
+    const userId = req.user.userId;
     const { question, documentId } = req.body || {};
 
     if (!question || typeof question !== "string" || !question.trim()) {
@@ -135,7 +142,22 @@ router.post("/search", async (req, res) => {
       });
     }
 
-    const document = await Document.findOne({ documentId });
+    const user = await User.findOne({ userId });
+    const now = new Date();
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const searchCount =
+      user?.searchCountResetAt && user.searchCountResetAt > dayAgo
+        ? user.searchCount || 0
+        : 0;
+
+    if (searchCount >= MAX_SEARCHES_PER_DAY) {
+      return res.status(429).json({
+        success: false,
+        message: `Query limit reached (${MAX_SEARCHES_PER_DAY} questions per day)`,
+      });
+    }
+
+    const document = await Document.findOne({ documentId, userId });
 
     if (!document) {
       return res.status(404).json({
@@ -144,14 +166,37 @@ router.post("/search", async (req, res) => {
       });
     }
 
+    await User.updateOne(
+      { userId },
+      {
+        $set: {
+          searchCount: searchCount + 1,
+          searchCountResetAt:
+            user?.searchCountResetAt && user.searchCountResetAt > dayAgo
+              ? user.searchCountResetAt
+              : now,
+        },
+      }
+    );
+
     console.log("Question:", question);
 
-    // 0. Let Gemini itself decide whether this question needs the
-    //    uploaded document or can be answered directly (greeting, small
-    //    talk, general knowledge, unclear input). No hardcoded word list.
-    const { needsDocument, answer: directAnswer } = await classifyAndMaybeAnswer(
-      question
-    );
+    // 0. Skip the document pipeline only for pure small talk. Any failure in
+    //    the classifier falls back to RAG, never to a generic 500, because a
+    //    document question must always be answerable.
+    let needsDocument = true;
+    let directAnswer = "";
+
+    try {
+      const classification = await classifyAndMaybeAnswer(question);
+      needsDocument = classification.needsDocument;
+      directAnswer = classification.answer;
+    } catch (error) {
+      console.error(
+        "Intent classification failed, falling back to document search:",
+        error.message
+      );
+    }
 
     if (!needsDocument) {
       console.log("Handled directly by Gemini, skipping RAG pipeline");
@@ -178,6 +223,16 @@ router.post("/search", async (req, res) => {
     );
 
     // 2. Find relevant document chunks
+    //
+    // Ownership is already enforced above (`Document.findOne({ documentId,
+    // userId })`), so filtering on documentId alone is safe — every chunk
+    // with this documentId was written with this user's userId at upload
+    // time.
+    //
+    // We deliberately do NOT add `userId` to the vector search filter: Atlas
+    // only accepts fields declared in the index's `filter` list, and a
+    // non-indexed field makes the whole aggregation fail
+    // ("Path 'userId' needs to be indexed as filter") and the request 500s.
     const results = await DocumentChunk.aggregate([
       {
         $vectorSearch: {
@@ -225,9 +280,15 @@ router.post("/search", async (req, res) => {
     const prompt = `
 You are a document question-answering assistant.
 
-Answer the user's question using only the provided context.
+The user is asking about the document "${document.fileName}". Answer the question using ONLY the context below, which is taken from that document.
 
-If the answer is not present in the context, clearly say:
+Rules:
+- Answer in the same language the question is written in.
+- Answer directly and completely. Do not ask the user to clarify or rephrase.
+- A short or vague question is still a real question — interpret it against the document and answer with what the context supports.
+- Include the concrete details from the context (role, experience, skills, dates, numbers, names) when they are relevant.
+- If the context only partially answers the question, answer with the part it does support and stop, instead of refusing.
+- Only if the context contains nothing usable, reply exactly:
 "I could not find the answer in the uploaded document."
 
 Context:

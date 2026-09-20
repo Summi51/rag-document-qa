@@ -2,6 +2,7 @@ import "dotenv/config";
 import "./config/pdfPolyfill.js";
 import express from "express";
 import cors from "cors";
+import authRoutes from "./routes/authRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import connectDB from "./config/db.js";
@@ -41,6 +42,7 @@ app.use(async (req, res, next) => {
   }
 });
 
+app.use("/api/auth", authRoutes);
 app.use("/api", uploadRoutes);
 app.use("/api", searchRoutes);
 

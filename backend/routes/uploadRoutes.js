@@ -2,9 +2,12 @@ import express from "express";
 import multer from "multer";
 import crypto from "crypto";
 import ai from "../config/gemini.js";
+import authMiddleware from "../middleware/authMiddleware.js";
 import Document from "../models/Document.js";
 import DocumentChunk from "../models/DocumentChunk.js";
 const router = express.Router();
+
+const MAX_UPLOADS_PER_USER = 20;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -44,7 +47,7 @@ const generateEmbedding = async (text) => {
   return result.embeddings[0].values;
 };
 
-router.post("/upload", upload.single("file"), async (req, res) => {
+router.post("/upload", authMiddleware, upload.single("file"), async (req, res) => {
   try {
     if (!ai) {
       return res.status(500).json({
@@ -52,6 +55,8 @@ router.post("/upload", upload.single("file"), async (req, res) => {
         message: "GEMINI_API_KEY is missing on the server",
       });
     }
+
+    const userId = req.user.userId;
 
     if (!req.file) {
       return res.status(400).json({
@@ -71,6 +76,33 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.log("Name:", req.file.originalname);
     console.log("Type:", req.file.mimetype);
     console.log("Size:", req.file.size, "bytes");
+
+    // Hash file bytes so the same PDF cannot be processed twice even if
+    // the user renamed it. Filename-only checks would miss that.
+    const fileHash = crypto
+      .createHash("sha256")
+      .update(req.file.buffer)
+      .digest("hex");
+
+    const existingDocument = await Document.findOne({ userId, fileHash });
+
+    if (existingDocument) {
+      return res.status(409).json({
+        success: false,
+        message: "This PDF has already been uploaded",
+        documentId: existingDocument.documentId,
+        fileName: existingDocument.fileName,
+      });
+    }
+
+    const uploadCount = await Document.countDocuments({ userId });
+
+    if (uploadCount >= MAX_UPLOADS_PER_USER) {
+      return res.status(429).json({
+        success: false,
+        message: `Upload limit reached (${MAX_UPLOADS_PER_USER} documents per account)`,
+      });
+    }
 
     // Unique ID for this document so multiple PDFs can coexist and be
     // searched independently instead of overwriting each other.
@@ -181,6 +213,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 
           embeddedChunks[index] = {
             documentId,
+            userId,
             chunkText: chunk.text,
             embedding,
             chunkIndex: chunk.chunkIndex,
@@ -199,11 +232,14 @@ router.post("/upload", upload.single("file"), async (req, res) => {
 
     const document = await Document.create({
       documentId,
+      userId,
       fileName: req.file.originalname,
+      fileHash,
     });
 
     const documentsToInsert = embeddedChunks.map((item) => ({
       documentId: item.documentId,
+      userId: item.userId,
       documentName: req.file.originalname,
       chunkText: item.chunkText,
       embedding: item.embedding,
@@ -234,6 +270,16 @@ router.post("/upload", upload.single("file"), async (req, res) => {
   } catch (error) {
     console.error("PDF upload failed:", error);
 
+    // Duplicate key from the per-user (userId, fileHash) index: the same PDF
+    // is already stored for this account. Report it as a conflict instead of
+    // a generic processing failure.
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "This PDF has already been uploaded",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Failed to process the PDF",
@@ -241,9 +287,9 @@ router.post("/upload", upload.single("file"), async (req, res) => {
   }
 });
 
-router.get("/documents", async (req, res) => {
+router.get("/documents", authMiddleware, async (req, res) => {
   try {
-    const documents = await Document.find()
+    const documents = await Document.find({ userId: req.user.userId })
       .sort({ createdAt: -1 })
       .select("documentId fileName createdAt");
 
@@ -257,6 +303,53 @@ router.get("/documents", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch documents",
+    });
+  }
+});
+
+router.delete("/documents/:documentId", authMiddleware, async (req, res) => {
+  try {
+    const { documentId } = req.params;
+    const userId = req.user.userId;
+
+    if (!documentId) {
+      return res.status(400).json({
+        success: false,
+        message: "documentId is required",
+      });
+    }
+
+    const document = await Document.findOne({ documentId, userId });
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found",
+      });
+    }
+
+    const chunkDeleteResult = await DocumentChunk.deleteMany({
+      documentId,
+      userId,
+    });
+    await Document.deleteOne({ documentId, userId });
+
+    console.log(
+      `Deleted document ${documentId} and ${chunkDeleteResult.deletedCount} chunks`
+    );
+
+    return res.json({
+      success: true,
+      message: "Document and associated chunks deleted",
+      documentId,
+      deletedChunks: chunkDeleteResult.deletedCount,
+    });
+  } catch (error) {
+    console.error("Failed to delete document:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete document",
     });
   }
 });

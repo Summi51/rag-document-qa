@@ -8,6 +8,12 @@ const documentChunkSchema = new mongoose.Schema(
       index: true, // "doc-uuid" - used to scope search to a single document
     },
 
+    userId: {
+      type: String,
+      required: true,
+      index: true, // Owner of this chunk — used to block cross-user search
+    },
+
     documentName: {
       type: String,
       required: true, // "react.pdf"
