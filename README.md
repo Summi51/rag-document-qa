@@ -5,17 +5,84 @@ Sign in, upload a PDF, then ask questions about **that** document. The app retri
 **Frontend:** [rag-document-qa-ff68.vercel.app](https://rag-document-qa-ff68.vercel.app/)
 **Backend:** [rag-document-qa-one.vercel.app](https://rag-document-qa-one.vercel.app/)
 
-## Features
+## What's done
 
-- JWT signup / login / logout, session restore on refresh
-- Per-user documents (you cannot list, delete, or search another user's PDF)
-- Page-by-page PDF text extraction (`pdfjs-dist`)
-- Overlapping chunks tagged with page number
-- Concurrent Gemini embeddings (`gemini-embedding-2`, 3072 dims)
-- Duplicate PDF block via SHA-256 content hash (per user — rename does not bypass)
-- Document Q&A with source chunks + page numbers
-- Small talk (`hi`, thanks) is answered directly; every other question goes through RAG
-- Limits: **20 uploads / account**, **50 searches / 24h**, password **≥ 8 characters**
+### Authentication & authorization
+- User signup / login / logout
+- JWT tokens (`Authorization: Bearer <token>`)
+- Password hashing with PBKDF2
+- Session restore on refresh via `GET /api/auth/me`
+- Auth middleware on upload, list, delete, and search
+- Documents and chunks scoped to `userId`
+- User-specific document list
+- User-specific vector search
+- Cannot access another user's document
+- Frontend login / signup screens and logout
+- Token stored in `localStorage` (`rag_auth_token`)
+- `401` auto-logs out the UI
+
+### PDF upload & processing
+- PDF-only upload (`multipart/form-data`, field `file`)
+- Page-by-page text extraction (`pdfjs-dist`)
+- Overlapping chunks (size 1000, overlap 200) tagged with `pageNumber`
+- Concurrent Gemini embeddings (`gemini-embedding-2`, 3072 dims, batches of 5)
+- Multi-document support (`documentId` per upload)
+- SHA-256 content-hash duplicate detection **per user** (rename does not bypass)
+- Duplicate upload returns `409 This PDF has already been uploaded`
+- Empty / scanned PDFs rejected if no extractable text
+- Delete document + cascade delete of its chunks
+- Per-user upload limit: **20 documents / account**
+
+### Q&A / RAG
+- Ask a question against a **selected** document
+- Intent classifier (`gemini-3.1-flash-lite`): greetings / thanks skip RAG
+- Every other question goes through RAG (short or vague questions included)
+- Query embedding with `gemini-embedding-2`
+- MongoDB Atlas `$vectorSearch` on index `autoembed_index`
+- Filter by `documentId` (ownership already checked)
+- Top 5 chunks returned as context
+- Grounded answer with `gemini-3.6-flash` (fallback: 3.5 / 3.1-flash-lite)
+- Source citations: file name, page number, chunk, match score
+- Per-user search limit: **50 queries / 24h**
+- Password must be **≥ 8 characters**
+
+### Frontend
+- Modular React components (not one giant `App.jsx`)
+- `AuthScreen`, `LoginForm`, `SignupForm`
+- `DocumentWorkspace`, `DocumentUpload`, `DocumentQA`
+- `AnswerCard`, `SourceList`, `AppHeader`
+- API clients: `api/client.js`, `api/auth.js`, `api/documents.js`
+- Local frontend → `http://localhost:8000`
+- Deployed frontend → `VITE_API_URL` or Vercel backend URL
+- No API keys or secrets in frontend code
+
+### Backend / deploy
+- Express API for local + Vercel serverless
+- Secrets only in backend `.env`: `MONGODB_URI`, `GEMINI_API_KEY`, `JWT_SECRET`
+- Startup cleanup of leftover global MongoDB index `fileHash_1`
+- Duplicate-key errors mapped to `409` instead of generic `500`
+- Live frontend: https://rag-document-qa-ff68.vercel.app/
+- Live backend: https://rag-document-qa-one.vercel.app/
+
+## Screenshots
+
+### Create account
+
+![Create account](signup.png)
+
+Sign up or sign in. Documents stay private to that account.
+
+### Upload a PDF
+
+![Upload document — duplicate blocked](upload-duplicate.png)
+
+Upload & process a PDF. The same file (even renamed) is blocked with `This PDF has already been uploaded`.
+
+### Ask a question
+
+![Ask a question with retrieved sources](ask-question.png)
+
+Ask about the selected document. The answer cites retrieved chunks with page numbers and match score.
 
 ## How it works
 
